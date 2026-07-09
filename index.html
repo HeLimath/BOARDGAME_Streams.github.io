@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>교실용 스트림스 진행기</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel for JSX compilation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <style>
+        @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+        body { font-family: 'Pretendard', sans-serif; }
+        
+        @keyframes pop {
+            0% { transform: scale(0.5); opacity: 0; }
+            70% { transform: scale(1.1); opacity: 1; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .animate-pop { animation: pop 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
+        
+        @keyframes bounce-subtle {
+            0%, 100% { transform: translateY(-5%); }
+            50% { transform: translateY(0); }
+        }
+        .animate-bounce-subtle { animation: bounce-subtle 2s infinite ease-in-out; }
+
+        /* 인쇄 전용 스타일 설정 - 디자인 대폭 강화 */
+        @media print {
+            body { 
+                background: white; 
+                margin: 0; 
+                padding: 0; 
+                -webkit-print-color-adjust: exact !important; 
+                print-color-adjust: exact !important; 
+            }
+            .print-hidden { display: none !important; }
+            @page { size: A4 portrait; margin: 8mm; }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 selection:bg-indigo-100">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useCallback, useRef } = React;
+
+        // 스트림스 기본 타일 구성: 1~10(1개씩), 11~19(2개씩), 20~30(1개씩), 조커(★ 1개) = 총 40개
+        const INITIAL_BAG = [
+            1,2,3,4,5,6,7,8,9,10,
+            11,11,12,12,13,13,14,14,15,15,16,16,17,17,18,18,19,19,
+            20,21,22,23,24,25,26,27,28,29,30,
+            '★'
+        ];
+
+        // 스트림스 공식 점수표
+        const SCORE_TABLE = [
+            { len: 1, score: 0 }, { len: 2, score: 1 }, { len: 3, score: 3 },
+            { len: 4, score: 5 }, { len: 5, score: 7 }, { len: 6, score: 9 },
+            { len: 7, score: 11 }, { len: 8, score: 15 }, { len: 9, score: 20 },
+            { len: 10, score: 25 }, { len: 11, score: 30 }, { len: 12, score: 35 },
+            { len: 13, score: 40 }, { len: 14, score: 50 }, { len: 15, score: 60 },
+            { len: 16, score: 70 }, { len: 17, score: 85 }, { len: 18, score: 100 },
+            { len: 19, score: 150 }, { len: 20, score: 300 }
+        ];
+
+        // 타일 색상 반환 함수 (시각적 피드백 제공)
+        const getTileStyles = (val) => {
+            if (val === '★') return 'bg-gradient-to-br from-amber-300 to-amber-500 text-white shadow-lg shadow-amber-500/40 border-amber-400';
+            if (val >= 1 && val <= 10) return 'bg-gradient-to-br from-emerald-400 to-emerald-600 text-white shadow-lg shadow-emerald-500/40 border-emerald-500';
+            if (val >= 11 && val <= 19) return 'bg-gradient-to-br from-blue-400 to-blue-600 text-white shadow-lg shadow-blue-500/40 border-blue-500';
+            if (val >= 20 && val <= 30) return 'bg-gradient-to-br from-rose-400 to-rose-600 text-white shadow-lg shadow-rose-500/40 border-rose-500';
+            return 'bg-gray-100 text-gray-300 border-2 border-dashed border-gray-300 shadow-inner';
+        };
+
+        // 경쾌한 클릭 효과음
+        const playTickSound = () => {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(800, ctx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(1200, ctx.currentTime + 0.1);
+                gain.gain.setValueAtTime(0, ctx.currentTime);
+                gain.gain.linearRampToValueAtTime(0.2, ctx.currentTime + 0.02);
+                gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
+                osc.connect(gain); gain.connect(ctx.destination);
+                osc.start(); osc.stop(ctx.currentTime + 0.1);
+            } catch(e) {}
+        };
+
+        // 게임 종료 효과음
+        const playTadaSound = () => {
+             try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const playNote = (freq, start, dur) => {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.connect(gain); gain.connect(ctx.destination);
+                    osc.type = 'triangle';
+                    osc.frequency.value = freq;
+                    gain.gain.setValueAtTime(0.2, start);
+                    gain.gain.exponentialRampToValueAtTime(0.01, start + dur);
+                    osc.start(start); osc.stop(start + dur);
+                };
+                const now = ctx.currentTime;
+                playNote(523.25, now, 0.2); // C
+                playNote(659.25, now + 0.2, 0.2); // E
+                playNote(783.99, now + 0.4, 0.4); // G
+                playNote(1046.50, now + 0.8, 0.8); // C (High)
+            } catch(e) {}
+        };
+
+        // 학생 배부용 게임 기록지 (인쇄시에만 보임) - 디자인 전면 개편
+        const PrintableSheets = () => {
+            return (
+                <div className="hidden print:flex flex-col w-full h-[280mm] text-black bg-white box-border font-sans">
+                    {Array.from({length: 4}).map((_, idx) => (
+                        <div key={idx} className="flex-1 flex flex-col justify-center relative border-b-[2px] border-dashed border-gray-400 last:border-0 py-3 box-border">
+                            
+                            {/* 자르는 선 표시 */}
+                            {idx !== 3 && (
+                                <div className="absolute -bottom-3 left-6 text-gray-500 text-xs bg-white px-2 flex items-center gap-1 z-10 font-bold">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="6" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><line x1="20" y1="4" x2="8.12" y2="15.88"></line><line x1="14.47" y1="14.48" x2="20" y2="20"></line><line x1="8.12" y1="8.12" x2="12" y2="12"></line></svg>
+                                    자르는 선
+                                </div>
+                            )}
+                            
+                            {/* 헤더 영역 */}
+                            <div className="flex justify-between items-end mb-3 px-2">
+                                <div className="flex items-end gap-2">
+                                    <h2 className="text-4xl font-black tracking-tighter italic text-gray-900 leading-none">STREAMS</h2>
+                                    <span className="text-xs font-bold text-gray-500 pb-1">교실 보드게임</span>
+                                </div>
+                                <div className="text-sm font-bold flex gap-4 items-end pb-1 text-gray-800">
+                                    <div className="flex items-end gap-1">학년 <div className="w-8 border-b-2 border-gray-400"></div></div>
+                                    <div className="flex items-end gap-1">반 <div className="w-8 border-b-2 border-gray-400"></div></div>
+                                    <div className="flex items-end gap-1">번 <div className="w-8 border-b-2 border-gray-400"></div></div>
+                                    <div className="flex items-end gap-1 text-base">이름 <div className="w-24 border-b-2 border-gray-600"></div></div>
+                                </div>
+                            </div>
+                            
+                            {/* 20개의 빈 칸 (보드게임 트랙 디자인) */}
+                            <div className="flex w-full bg-gray-100 p-1.5 rounded-xl border-[3px] border-gray-800 mb-3 shadow-sm">
+                                {Array.from({length: 20}).map((_, i) => (
+                                    <div key={i} className="flex-1 flex flex-col items-center bg-white border-2 border-gray-300 rounded-lg mx-[2px] overflow-hidden">
+                                        <div className="w-full text-center text-[10px] font-black text-gray-500 bg-gray-50 border-b-2 border-gray-200 py-[3px]">{i+1}</div>
+                                        <div className="h-10 w-full"></div>
+                                    </div>
+                                ))}
+                            </div>
+                            
+                            <div className="flex gap-3 px-1 items-stretch">
+                                {/* 타일 구성 안내 (확률 정보 시각화) */}
+                                <div className="w-[30%] border-[2px] border-gray-800 rounded-xl p-2 bg-gray-50 flex flex-col justify-center">
+                                    <div className="font-extrabold text-[12px] mb-2 text-gray-800 flex items-center gap-1">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><circle cx="15.5" cy="8.5" r="1.5"></circle><circle cx="15.5" cy="15.5" r="1.5"></circle><circle cx="8.5" cy="15.5" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle></svg>
+                                        타일 구성 (총 40장)
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-x-1 gap-y-1 text-[10px] font-bold text-gray-600">
+                                        <div className="bg-white px-1.5 py-1 rounded border border-gray-300 text-center">1~10 (각 1장)</div>
+                                        <div className="bg-blue-100 px-1.5 py-1 rounded border border-blue-300 text-blue-800 font-black text-center shadow-sm">11~19 (각 2장!)</div>
+                                        <div className="bg-white px-1.5 py-1 rounded border border-gray-300 text-center">20~30 (각 1장)</div>
+                                        <div className="bg-amber-100 px-1.5 py-1 rounded border border-amber-300 text-amber-700 font-black text-center shadow-sm">★조커 (1장)</div>
+                                    </div>
+                                </div>
+
+                                {/* 가로형 점수표 */}
+                                <div className="flex-1 flex flex-col justify-center">
+                                    <div className="border-[2px] border-gray-800 rounded-xl overflow-hidden flex flex-col">
+                                        <div className="flex bg-gray-800 text-white text-[10px] font-bold text-center">
+                                            <div className="w-10 py-1 border-r border-gray-600 flex items-center justify-center">연결</div>
+                                            {SCORE_TABLE.map((st, i) => (
+                                                <div key={i} className={`flex-1 py-1 flex items-center justify-center ${i !== 19 ? 'border-r border-gray-600' : ''}`}>{st.len}</div>
+                                            ))}
+                                        </div>
+                                        <div className="flex bg-white text-gray-900 text-[11px] font-black text-center">
+                                            <div className="w-10 py-1 border-r border-gray-300 bg-gray-100 flex items-center justify-center text-[10px]">점수</div>
+                                            {SCORE_TABLE.map((st, i) => (
+                                                <div key={i} className={`flex-1 py-1 flex items-center justify-center ${i !== 19 ? 'border-r border-gray-300' : ''}`}>{st.score}</div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                {/* 점수 계산 영역 */}
+                                <div className="w-[18%] flex flex-col justify-end items-end pb-1 pr-2">
+                                    <div className="flex items-end gap-1 mb-1 text-[11px] font-bold text-gray-500">
+                                        <div className="w-6 border-b border-gray-400 text-center"></div> + 
+                                        <div className="w-6 border-b border-gray-400 text-center"></div> + 
+                                        <div className="w-6 border-b border-gray-400 text-center"></div> =
+                                    </div>
+                                    <div className="flex items-end gap-2 text-base font-extrabold text-gray-800 mt-1">
+                                        총점 <div className="w-14 border-b-[3px] border-gray-900 text-center text-xl text-black"></div> 점
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            );
+        };
+
+        // 선생님을 위한 45분 수업 가이드 모달
+        const GuideModal = ({ isOpen, onClose }) => {
+            if(!isOpen) return null;
+            return (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 print-hidden backdrop-blur-sm">
+                    <div className="bg-white rounded-3xl max-w-2xl w-full p-8 shadow-2xl relative animate-pop">
+                        <button onClick={onClose} className="absolute top-6 right-6 text-gray-400 hover:text-gray-800 text-3xl font-bold transition-colors">&times;</button>
+                        <h2 className="text-2xl font-extrabold mb-6 flex items-center gap-2">👨‍🏫 스트림스 45분 수업 가이드</h2>
+                        
+                        <div className="space-y-4 text-gray-700">
+                            <div className="bg-blue-50 border border-blue-100 p-4 rounded-xl">
+                                <h3 className="font-bold text-blue-800 mb-2 flex items-center gap-2">💡 1단계: 준비 및 규칙 설명 (10분)</h3>
+                                <ul className="list-disc pl-5 text-sm space-y-1">
+                                    <li>우측 상단의 <b>[학생 기록지 인쇄]</b> 버튼을 눌러 시트지를 출력해 배부합니다. (A4 1장에 4명분)</li>
+                                    <li><b>타일 구성(1~30)</b>을 설명합니다. 특히 <b>11~19는 2장씩</b> 있어 더 자주 나온다는 점을 강조하세요!</li>
+                                    <li>뽑힌 숫자는 20칸 중 한 곳에 무조건 적어야 하며, 한 번 적으면 지울 수 없습니다.</li>
+                                    <li>오름차순(점점 커지거나 같은 수 연속)으로 길게 연결할수록 점수가 기하급수적으로 높아집니다.</li>
+                                </ul>
+                            </div>
+
+                            <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl">
+                                <h3 className="font-bold text-emerald-800 mb-2 flex items-center gap-2">🌱 2단계: 연습 게임 1라운드 (10분)</h3>
+                                <ul className="list-disc pl-5 text-sm space-y-1">
+                                    <li>규칙 숙지를 위해 선생님이 <b>[스페이스바]</b>를 눌러 타일을 뽑으며 가볍게 진행합니다.</li>
+                                    <li>20개가 다 뽑히면 스크린 하단의 점수표를 보며 각자 점수를 계산하게 합니다.</li>
+                                </ul>
+                            </div>
+
+                            <div className="bg-rose-50 border border-rose-100 p-4 rounded-xl">
+                                <h3 className="font-bold text-rose-800 mb-2 flex items-center gap-2">🔥 3단계: 본 게임 2라운드 (15분)</h3>
+                                <ul className="list-disc pl-5 text-sm space-y-1">
+                                    <li>본격적인 승부를 겨룹니다. 학생들의 몰입도가 가장 높은 시간입니다.</li>
+                                    <li>짝꿍과 두 명이 한 팀이 되어 상의하며 채우게 하면, 확률에 대한 의사소통이 일어나 더욱 교육적입니다.</li>
+                                </ul>
+                            </div>
+
+                            <div className="bg-amber-50 border border-amber-100 p-4 rounded-xl">
+                                <h3 className="font-bold text-amber-800 mb-2 flex items-center gap-2">🏆 4단계: 점수 확인 및 시상 (10분)</h3>
+                                <ul className="list-disc pl-5 text-sm space-y-1">
+                                    <li>최고 득점자를 찾고, 어떻게 배치했는지 발표하게 하여 칭찬으로 수업을 마무리합니다.</li>
+                                </ul>
+                            </div>
+                        </div>
+                        
+                        <div className="mt-8 text-center">
+                            <button onClick={onClose} className="px-8 py-3 bg-gray-800 text-white font-bold rounded-xl hover:bg-gray-900 transition-colors shadow-lg active:scale-95">확인했습니다</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const App = () => {
+            const [bag, setBag] = useState(INITIAL_BAG);
+            const [drawn, setDrawn] = useState([]);
+            const [currentTile, setCurrentTile] = useState(null);
+            const [isGuideOpen, setIsGuideOpen] = useState(false);
+
+            const isGameOver = drawn.length >= 20;
+
+            // 새 게임 시작 로직
+            const resetGame = () => {
+                if (drawn.length > 0 && !isGameOver) {
+                    if (!confirm("진행 중인 게임이 있습니다. 정말 새로 시작하시겠습니까?")) return;
+                }
+                setBag(INITIAL_BAG);
+                setDrawn([]);
+                setCurrentTile(null);
+            };
+
+            // 타일 뽑기 로직
+            const drawTile = useCallback(() => {
+                if (isGameOver || bag.length === 0) return;
+                
+                const randomIndex = Math.floor(Math.random() * bag.length);
+                const selectedTile = bag[randomIndex];
+                
+                playTickSound();
+
+                setBag(prev => prev.filter((_, index) => index !== randomIndex));
+                setDrawn(prev => {
+                    const newDrawn = [...prev, selectedTile];
+                    if (newDrawn.length === 20) {
+                        setTimeout(playTadaSound, 300); // 20개 다 뽑히면 빵빠레
+                    }
+                    return newDrawn;
+                });
+                setCurrentTile(selectedTile);
+            }, [bag, isGameOver]);
+
+            // 스페이스바 단축키 지원
+            useEffect(() => {
+                const handleKeyDown = (e) => {
+                    // 스페이스바 또는 엔터키를 누르면 타일 뽑기 (모달이 열려있지 않을 때만)
+                    if ((e.code === 'Space' || e.code === 'Enter') && !isGuideOpen) {
+                        e.preventDefault(); // 스크롤 방지
+                        drawTile();
+                    }
+                };
+                window.addEventListener('keydown', handleKeyDown);
+                return () => window.removeEventListener('keydown', handleKeyDown);
+            }, [drawTile, isGuideOpen]);
+
+            return (
+                <div className="min-h-screen flex flex-col">
+                    <PrintableSheets />
+                    <GuideModal isOpen={isGuideOpen} onClose={() => setIsGuideOpen(false)} />
+
+                    {/* Header */}
+                    <header className="flex flex-col sm:flex-row justify-between items-center p-5 bg-white shadow-sm border-b border-gray-200 print-hidden z-10 sticky top-0">
+                        <div className="flex items-center gap-3 mb-4 sm:mb-0">
+                            <div className="bg-indigo-600 text-white p-2 rounded-lg shadow-sm">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+                            </div>
+                            <h1 className="text-2xl font-extrabold text-gray-800 tracking-tight">교실 스트림스</h1>
+                        </div>
+                        <div className="flex gap-2">
+                            <button onClick={() => setIsGuideOpen(true)} className="px-4 py-2 bg-blue-50 text-blue-700 font-semibold rounded-xl hover:bg-blue-100 transition-colors border border-blue-200 shadow-sm">
+                                👨‍🏫 수업 가이드
+                            </button>
+                            <button 
+                                onClick={() => {
+                                    alert("프린트 설정창에서 '배경 그래픽(Background graphics)'을 꼭 체크해주세요! 그래야 색상과 예쁜 트랙이 인쇄됩니다.");
+                                    window.print();
+                                }} 
+                                className="px-4 py-2 bg-emerald-50 text-emerald-700 font-semibold rounded-xl hover:bg-emerald-100 transition-colors border border-emerald-200 shadow-sm flex items-center gap-2"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
+                                학습지 인쇄
+                            </button>
+                            <button onClick={resetGame} className="px-4 py-2 bg-gray-100 text-gray-700 font-semibold rounded-xl hover:bg-gray-200 transition-colors border border-gray-300 shadow-sm">
+                                🔄 새 게임
+                            </button>
+                        </div>
+                    </header>
+
+                    {/* Main Content Area */}
+                    <main className="flex-1 p-4 sm:p-6 flex flex-col lg:flex-row gap-6 print-hidden w-full max-w-7xl mx-auto">
+                        
+                        {/* Left Panel: Current Tile & Controls */}
+                        <div className="flex-[3] flex flex-col items-center justify-center bg-white rounded-3xl shadow-sm border border-gray-100 p-8 relative overflow-hidden">
+                            <div className="absolute top-6 left-6 text-gray-400 font-semibold text-lg flex items-center gap-2">
+                                <span className="relative flex h-3 w-3">
+                                  {bag.length > 0 && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>}
+                                  <span className={`relative inline-flex rounded-full h-3 w-3 ${bag.length > 0 ? 'bg-indigo-500' : 'bg-gray-400'}`}></span>
+                                </span>
+                                주머니 남은 타일: {bag.length}개
+                            </div>
+                            
+                            <div className="text-center mb-8 flex flex-col items-center justify-center min-h-[350px]">
+                                {isGameOver ? (
+                                    <div className="text-center animate-bounce-subtle">
+                                        <div className="text-6xl mb-4">🎉</div>
+                                        <h2 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-purple-600">게임 종료!</h2>
+                                        <p className="text-xl text-gray-600 mt-2 font-medium">학습지 아래의 점수표를 보고 총점을 계산해 보세요.</p>
+                                    </div>
+                                ) : (
+                                    <div 
+                                        key={drawn.length} // 트리거 애니메이션용 키
+                                        className={`w-64 h-64 md:w-80 md:h-80 rounded-[3rem] flex items-center justify-center text-[8rem] font-black transition-colors ${currentTile ? getTileStyles(currentTile) + ' animate-pop' : 'bg-gray-50 text-gray-300 border-4 border-dashed border-gray-200'}`}
+                                    >
+                                        {currentTile || '?'}
+                                    </div>
+                                )}
+                            </div>
+
+                            <button 
+                                onClick={drawTile} 
+                                disabled={isGameOver}
+                                className={`w-full max-w-lg py-5 text-2xl font-bold rounded-2xl shadow-xl transition-all flex items-center justify-center gap-3 ${
+                                    isGameOver 
+                                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200 shadow-none' 
+                                    : 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white hover:from-indigo-600 hover:to-purple-700 active:scale-[0.98]'
+                                }`}
+                            >
+                                {isGameOver ? '모든 타일을 뽑았습니다' : '🎲 타일 뽑기 (Spacebar)'}
+                            </button>
+                            {!isGameOver && <p className="text-gray-400 mt-3 text-sm">마우스 클릭 또는 스페이스바를 누르세요.</p>}
+                        </div>
+                        
+                        {/* Right Panel: Draw History */}
+                        <div className="flex-[2] bg-white rounded-3xl shadow-sm border border-gray-100 p-6 flex flex-col">
+                            <div className="flex justify-between items-end mb-6 border-b border-gray-100 pb-4">
+                                <h2 className="text-xl font-extrabold text-gray-800">뽑힌 타일 기록</h2>
+                                <span className="text-lg font-bold bg-gray-100 text-gray-600 px-3 py-1 rounded-lg">{drawn.length} / 20</span>
+                            </div>
+                            
+                            <div className="grid grid-cols-4 gap-3">
+                                {Array.from({length: 20}).map((_, i) => (
+                                    <div key={i} className="flex flex-col items-center">
+                                        <div className={`w-full aspect-square rounded-2xl flex items-center justify-center text-3xl font-black ${
+                                            drawn[i] 
+                                            ? getTileStyles(drawn[i]) 
+                                            : 'bg-gray-50 text-gray-300 border-2 border-dashed border-gray-200'
+                                        }`}>
+                                            {drawn[i] || ''}
+                                        </div>
+                                        <span className="text-[10px] font-bold text-gray-400 mt-1">{i + 1}번째</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </main>
+
+                    {/* Bottom Reference Area: Score Table */}
+                    <section className="p-6 bg-white rounded-3xl shadow-sm border border-gray-100 max-w-7xl mx-auto w-full mb-8 print-hidden">
+                        <div className="flex items-center gap-2 mb-4 justify-center">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-indigo-600"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+                            <h3 className="text-xl font-extrabold text-gray-800">점수 계산표</h3>
+                        </div>
+                        <div className="flex flex-wrap justify-center gap-2">
+                            {SCORE_TABLE.map(item => (
+                                <div key={item.len} className="flex flex-col border border-gray-200 rounded-xl overflow-hidden min-w-[50px] shadow-sm hover:shadow-md transition-shadow">
+                                    <div className="bg-gray-50 text-xs py-1.5 font-bold text-gray-600 text-center border-b border-gray-200">{item.len}칸</div>
+                                    <div className="bg-white py-2 font-black text-indigo-700 text-center">{item.score}</div>
+                                </div>
+                            ))}
+                        </div>
+                        <p className="text-center text-sm text-gray-500 mt-4 font-medium">오름차순(점점 커지거나 같은 수)으로 끊기지 않고 연결된 칸 수에 따라 점수를 부여합니다.</p>
+                    </section>
+
+                    {}
+                    <footer className="text-center pb-8 pt-4 text-gray-400 text-sm print-hidden mt-auto">
+                        <p className="flex items-center justify-center gap-1.5 font-medium">
+                            Made with 
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none" className="text-rose-400 animate-pulse">
+                                <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+                            </svg> 
+                            by <span className="text-gray-600 font-bold hover:text-indigo-600 transition-colors cursor-pointer" title="코드에서 이 부분을 선생님 성함으로 수정하세요!">예진T</span>
+                        </p>
+                    </footer>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
